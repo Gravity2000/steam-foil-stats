@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam 补充包闪卡统计
 // @namespace    https://github.com/Gravity2000
-// @version      1.1.0
+// @version      1.1.1
 // @updateURL    https://raw.githubusercontent.com/Gravity2000/steam-foil-stats/main/steam-foil-stats.user.js
 // @downloadURL  https://raw.githubusercontent.com/Gravity2000/steam-foil-stats/main/steam-foil-stats.user.js
 // @supportURL   https://github.com/Gravity2000/steam-foil-stats/issues
