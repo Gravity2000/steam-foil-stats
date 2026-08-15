@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam 补充包闪卡统计
 // @namespace    https://github.com/Gravity2000
-// @version      1.4.0
+// @version      1.4.1
 // @updateURL    https://raw.githubusercontent.com/Gravity2000/steam-foil-stats/main/steam-foil-stats.user.js
 // @downloadURL  https://raw.githubusercontent.com/Gravity2000/steam-foil-stats/main/steam-foil-stats.user.js
 // @supportURL   https://github.com/Gravity2000/steam-foil-stats/issues
@@ -225,18 +225,30 @@
   #fs-embed .fs-chk { display: inline-flex; align-items: center; gap: 4px;
     cursor: pointer; color: #c7d5e0; user-select: none; }
   #fs-embed .fs-chk input { cursor: pointer; accent-color: #4c6b91; }
-  #fs-embed .fs-grid { display: flex; flex-wrap: wrap; gap: 14px; }
+  #fs-embed .fs-grid { display: flex; flex-wrap: wrap; gap: 12px; }
   #fs-embed .fs-card {
-    flex: 1 1 240px; background: #1b2838;
+    flex: 1 1 190px; min-width: 0; background: #1b2838;
     border: 1px solid #2f4257; border-radius: 3px; padding: 12px;
+  }
+  /* 游戏列表另起一行占满，不跟统计卡抢宽度 */
+  #fs-embed .fs-card-wide { flex: 1 1 100%; }
+  #fs-embed .fs-card-wide .fs-games {
+    columns: 2; column-gap: 20px; max-height: none;
+  }
+  @media (max-width: 900px) {
+    #fs-embed .fs-card { flex: 1 1 100%; }
+    #fs-embed .fs-card-wide .fs-games { columns: 1; }
   }
   #fs-embed .fs-card h4 {
     margin: 0 0 8px; font-size: 12px; color: #66c0f4; font-weight: normal;
     border-bottom: 1px solid #2f4257; padding-bottom: 6px;
   }
-  #fs-embed .fs-big { font-size: 30px; color: #a4d007; text-align: center; padding: 6px 0 2px; }
+  #fs-embed .fs-big { font-size: 26px; color: #a4d007; text-align: center;
+    padding: 6px 0 2px; white-space: nowrap; }
   #fs-embed .fs-sub { text-align: center; font-size: 11px; color: #8f98a0; margin-bottom: 10px; }
-  #fs-embed .fs-stat { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; }
+  #fs-embed .fs-stat { display: flex; justify-content: space-between; gap: 8px;
+    padding: 3px 0; font-size: 12px; }
+  #fs-embed .fs-stat b { white-space: nowrap; }
   #fs-embed .fs-stat b { color: #66c0f4; font-weight: normal; }
   #fs-embed .fs-scope { font-size: 12px; color: #8f98a0; margin-bottom: 10px; }
   #fs-embed .fs-scope b { color: #66c0f4; }
@@ -430,7 +442,7 @@
           <div class="fs-stat"><span>95% 置信区间</span>
             <b>${B.n ? pct(plo) + " ~ " + pct(phi) : "—"}</b></div>
         </div>` : ""}
-        ${(enB && gameRows) ? `<div class="fs-card">
+        ${(enB && gameRows) ? `<div class="fs-card fs-card-wide">
           <h4>补充包按游戏（闪卡/卡牌）</h4>
           <div class="fs-games">${gameRows}</div>
         </div>` : ""}
