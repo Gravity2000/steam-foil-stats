@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam 补充包闪卡统计
 // @namespace    https://github.com/Gravity2000
-// @version      1.1.1
+// @version      1.2.0
 // @updateURL    https://raw.githubusercontent.com/Gravity2000/steam-foil-stats/main/steam-foil-stats.user.js
 // @downloadURL  https://raw.githubusercontent.com/Gravity2000/steam-foil-stats/main/steam-foil-stats.user.js
 // @supportURL   https://github.com/Gravity2000/steam-foil-stats/issues
@@ -21,7 +21,9 @@
 
   const STORE_KEY = "foilstats_events_v1";
   const LIMIT_KEY = "foilstats_limit_v1";
-  const EVENT_KEYWORDS = ["已拆开补充包", "Unpacked booster pack", "拆開補充包"];
+  const BOOSTER_KEYWORDS = ["已拆开补充包", "Unpacked booster pack", "拆開補充包"];
+  const FARM_KEYWORDS = ["因游戏时数而获取", "因遊戲時數而獲取",
+                         "Earned", "Got an item drop", "游戏时数", "遊戲時數"];
   const FOIL_MARKERS = ["(闪亮)", "（闪亮）", "(閃亮)", "(Foil)"];
   const PAGE_DELAY_MS = 4000;
   const MAX_PAGES = 400;
@@ -43,7 +45,8 @@
   // ---------------- 工具 ----------------
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const isFoilName = n => FOIL_MARKERS.some(m => n.includes(m));
-  const isBoosterEvent = d => EVENT_KEYWORDS.some(k => d.includes(k));
+  const isBoosterEvent = d => BOOSTER_KEYWORDS.some(k => d.includes(k));
+  const isFarmEvent = d => !isBoosterEvent(d) && FARM_KEYWORDS.some(k => d.includes(k));
 
   function wilson(successes, total, z = 1.96) {
     if (total === 0) return [0, 0];
@@ -88,11 +91,16 @@
 
   // ---------------- 解析 ----------------
   function parseRow(row) {
-    const desc = row.querySelector(".tradehistory_event_description");
-    if (!desc || !isBoosterEvent(desc.textContent.trim())) return null;
+    const descEl = row.querySelector(".tradehistory_event_description");
+    if (!descEl) return null;
+    const desc = descEl.textContent.trim();
+
+    const booster = isBoosterEvent(desc);
+    const farm = isFarmEvent(desc);
+    if (!booster && !farm) return null;
 
     const groups = row.querySelectorAll(".tradehistory_items");
-    if (groups.length < 2) return null;
+    if (!groups.length) return null;
 
     let boosterName = "";
     let received = [];
@@ -107,18 +115,26 @@
     });
 
     if (!received.length) return null;
+    // 开包必须是「减补充包 + 加卡牌」的成对结构，缺一不算
+    if (booster && !boosterName) return null;
 
     const anyItem = row.querySelector("[id^='history']");
     const id = anyItem
       ? anyItem.id.replace(/^history/, "").replace(/_item\d+$/, "")
-      : `${boosterName}|${received.join(",")}|${Math.random()}`;
+      : `${desc}|${boosterName}|${received.join(",")}|${Math.random()}`;
 
     const dateEl = row.querySelector(".tradehistory_date");
     const time = dateEl ? dateEl.textContent.replace(/\s+/g, " ").trim() : "";
 
+    // 挂卡掉落没有「包」的概念，游戏名从卡牌本身取不到，标记为掉落
+    const game = booster
+      ? boosterName.replace(/\s*补充包\s*$/, "").replace(/\s*Booster Pack\s*$/i, "").trim()
+      : "";
+
     return {
       id, time, ts: parseTime(time),
-      game: boosterName.replace(/\s*补充包\s*$/, "").replace(/\s*Booster Pack\s*$/i, "").trim(),
+      kind: booster ? "booster" : "farm",
+      game,
       cards: received,
       foils: received.filter(isFoilName)
     };
@@ -276,24 +292,57 @@
   };
 
   // ---------------- 渲染 ----------------
+  // limit 只作用于补充包（因为「最近 N 包」按包计数）；
+  // 挂卡掉落按同一时间窗口截取，保证两个统计的时间范围一致，可比。
+  function splitScope(map, limit) {
+    const all = Object.values(map).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    const boosters = all.filter(e => e.kind !== "farm");
+    const picked = limit > 0 ? boosters.slice(0, limit) : boosters;
+    const cutoff = picked.length ? (picked[picked.length - 1].ts || 0) : 0;
+    const farms = limit > 0
+      ? all.filter(e => e.kind === "farm" && (e.ts || 0) >= cutoff)
+      : all.filter(e => e.kind === "farm");
+    return { boosters: picked, farms, totalBoosters: boosters.length,
+             totalFarms: all.length - boosters.length };
+  }
+
+  function tally(list) {
+    const cards = list.reduce((s, e) => s + e.cards.length, 0);
+    const foils = list.reduce((s, e) => s + e.foils.length, 0);
+    const [lo, hi] = wilson(foils, cards);
+    return { n: list.length, cards, foils, lo, hi,
+             rate: cards ? foils / cards * 100 : 0 };
+  }
+
+  const pct = v => (v * 100).toFixed(2) + "%";
+  const ci = t => t.cards ? pct(t.lo) + " ~ " + pct(t.hi) : "—";
+
   function render() {
     const map = loadEvents();
     const limit = loadLimit();
-    const total = Object.keys(map).length;
-    const evts = recentEvents(map, limit);
+    const { boosters, farms, totalBoosters, totalFarms } = splitScope(map, limit);
 
-    const packs = evts.length;
-    const cards = evts.reduce((s, e) => s + e.cards.length, 0);
-    const foilCards = evts.reduce((s, e) => s + e.foils.length, 0);
-    const foilPacks = evts.filter(e => e.foils.length > 0).length;
+    const B = tally(boosters);
+    const F = tally(farms);
 
-    const [lo, hi] = wilson(foilCards, cards);
-    const rate = cards ? foilCards / cards * 100 : 0;
-    const [plo, phi] = wilson(foilPacks, packs);
-    const packRate = packs ? foilPacks / packs * 100 : 0;
+    // 单包含闪率（仅补充包有意义）
+    const foilPacks = boosters.filter(e => e.foils.length > 0).length;
+    const [plo, phi] = wilson(foilPacks, B.n);
+    const packRate = B.n ? foilPacks / B.n * 100 : 0;
+
+    // 两个渠道的差异是否显著：置信区间不重叠即为显著
+    let cmp = "";
+    if (B.cards >= 100 && F.cards >= 100) {
+      const overlap = !(B.hi < F.lo || F.hi < B.lo);
+      cmp = overlap
+        ? `两者置信区间重叠，<b>目前看不出显著差异</b>，数据支持「两个渠道掉率相同」。`
+        : `两者置信区间不重叠，<b>差异显著</b> —— 补充包与挂卡的闪卡掉率可能不是同一个数。`;
+    } else {
+      cmp = "两边样本都超过 100 张卡之后，这里会给出差异是否显著的判断。";
+    }
 
     const byGame = {};
-    evts.forEach(e => {
+    boosters.forEach(e => {
       const g = byGame[e.game] || (byGame[e.game] = { n: 0, f: 0 });
       g.n += e.cards.length;
       g.f += e.foils.length;
@@ -302,47 +351,57 @@
       .map(([g, v]) => `<div class="${v.f ? "fs-hit" : ""}">
         <span>${g || "(未知)"}</span><span>${v.f}/${v.n} 卡</span></div>`).join("");
 
-    const newest = packs ? evts[0].time : "";
-    const oldest = packs ? evts[packs - 1].time : "";
+    const newest = B.n ? boosters[0].time : "";
+    const oldest = B.n ? boosters[B.n - 1].time : "";
 
     $("#fs-result").innerHTML = `
       <div class="fs-scope">
         统计范围：${limit > 0
-          ? `最近 <b>${limit}</b> 包（已抓取 ${total} 包）`
-          : `<b>全部</b> ${total} 包`}
-        ${packs ? `<span class="fs-range">　${oldest} → ${newest}</span>` : ""}
+          ? `最近 <b>${limit}</b> 包（已抓取 ${totalBoosters} 包 / ${totalFarms} 条挂卡掉落）`
+          : `<b>全部</b> ${totalBoosters} 包 / ${totalFarms} 条挂卡掉落`}
+        ${B.n ? `<span class="fs-range">　${oldest} → ${newest}</span>` : ""}
       </div>
       <div class="fs-grid">
         <div class="fs-card">
-          <h4>主指标 · 单卡出闪率</h4>
-          <div class="fs-big">${cards ? rate.toFixed(2) + "%" : "—"}</div>
+          <h4>补充包 · 单卡出闪率</h4>
+          <div class="fs-big">${B.cards ? B.rate.toFixed(2) + "%" : "—"}</div>
           <div class="fs-sub">闪卡张数 ÷ 卡牌总数</div>
-          <div class="fs-stat"><span>卡牌总数</span><b>${cards}</b></div>
-          <div class="fs-stat"><span>闪卡张数</span><b>${foilCards}</b></div>
-          <div class="fs-stat"><span>95% 置信区间</span>
-            <b>${cards ? (lo*100).toFixed(2) + "% ~ " + (hi*100).toFixed(2) + "%" : "—"}</b></div>
+          <div class="fs-stat"><span>开包数</span><b>${B.n}</b></div>
+          <div class="fs-stat"><span>卡牌总数</span><b>${B.cards}</b></div>
+          <div class="fs-stat"><span>闪卡张数</span><b>${B.foils}</b></div>
+          <div class="fs-stat"><span>95% 置信区间</span><b>${ci(B)}</b></div>
         </div>
         <div class="fs-card">
-          <h4>次要指标 · 单包含闪率</h4>
-          <div class="fs-big" style="color:#66c0f4">${packs ? packRate.toFixed(2) + "%" : "—"}</div>
+          <h4>挂卡掉落 · 单卡出闪率</h4>
+          <div class="fs-big" style="color:#f4a460">${F.cards ? F.rate.toFixed(2) + "%" : "—"}</div>
+          <div class="fs-sub">闪卡张数 ÷ 卡牌总数</div>
+          <div class="fs-stat"><span>掉落记录数</span><b>${F.n}</b></div>
+          <div class="fs-stat"><span>卡牌总数</span><b>${F.cards}</b></div>
+          <div class="fs-stat"><span>闪卡张数</span><b>${F.foils}</b></div>
+          <div class="fs-stat"><span>95% 置信区间</span><b>${ci(F)}</b></div>
+        </div>
+        <div class="fs-card">
+          <h4>补充包 · 单包含闪率</h4>
+          <div class="fs-big" style="color:#66c0f4">${B.n ? packRate.toFixed(2) + "%" : "—"}</div>
           <div class="fs-sub">含闪卡的包数 ÷ 总包数</div>
-          <div class="fs-stat"><span>开包数</span><b>${packs}</b></div>
           <div class="fs-stat"><span>含闪卡的包数</span><b>${foilPacks}</b></div>
           <div class="fs-stat"><span>95% 置信区间</span>
-            <b>${packs ? (plo*100).toFixed(2) + "% ~ " + (phi*100).toFixed(2) + "%" : "—"}</b></div>
+            <b>${B.n ? pct(plo) + " ~ " + pct(phi) : "—"}</b></div>
         </div>
         ${gameRows ? `<div class="fs-card">
-          <h4>按游戏（闪卡/卡牌）</h4>
+          <h4>补充包按游戏（闪卡/卡牌）</h4>
           <div class="fs-games">${gameRows}</div>
         </div>` : ""}
       </div>
-      ${cards ? `<div class="fs-note">
-        当前样本 ${cards} 张卡（${packs} 包）。
-        ${cards < 1500 ? "样本偏小，区间会很宽，先别急着下结论。"
-                       : "样本尚可，可以开始参考。"}
-        要把区间收窄到能区分 1% 和 0.5%，大概需要一万张卡左右。<br>
-        两个指标的关系可以反推机制：若每张卡独立判定，单包含闪率应 ≈ 1-(1-p)³ ≈ 3 倍单卡率；
-        若按包判定后再分配，两者关系会不同。
+      ${(B.cards || F.cards) ? `<div class="fs-note">
+        <b style="color:#66c0f4">两个渠道对比：</b>${cmp}<br><br>
+        当前样本：补充包 ${B.cards} 张卡（${B.n} 包），挂卡 ${F.cards} 张卡。
+        ${(B.cards < 1500) ? "补充包样本偏小，区间会很宽，先别急着下结论。" : ""}
+        要把区间收窄到能区分 1% 和 0.5%，大概需要一万张卡。<br><br>
+        <b style="color:#66c0f4">注意：</b>挂卡掉落的记录会把同一时段的多次掉落合并成一条
+        （一条里可能有 1~2 张卡），所以分母按<b>卡牌张数</b>算，不是记录条数。<br>
+        补充包的单卡率与单包率的关系可反推机制：若每张卡独立判定，
+        单包含闪率应 ≈ 1-(1-p)³ ≈ 3 倍单卡率。
       </div>` : ""}`;
   }
 
@@ -366,7 +425,10 @@
     try {
       [...document.querySelectorAll(".tradehistoryrow")]
         .map(parseRow).filter(Boolean)
-        .forEach(e => { seen++; if (!map[e.id]) { map[e.id] = e; added++; } });
+        .forEach(e => {
+          if (e.kind !== "farm") seen++;          // 上限只按补充包计数
+          if (!map[e.id]) { map[e.id] = e; added++; }
+        });
 
       while (!abort && pages < MAX_PAGES && !(limit > 0 && seen >= limit)) {
         let data;
@@ -389,15 +451,16 @@
           continue;
         }
 
-        let newInPage = 0;
+        let newInPage = 0, boostersInPage = 0;
         rows.forEach(e => {
-          seen++;
+          if (e.kind !== "farm") { seen++; boostersInPage++; }
           if (!map[e.id]) { map[e.id] = e; added++; newInPage++; }
         });
 
         pages++;
-        log(`第 ${pages} 页：开包记录 ${rows.length} 条，新增 ${newInPage}`
-            + (limit > 0 ? `（累计 ${seen}/${limit}）` : ""));
+        log(`第 ${pages} 页：开包 ${boostersInPage} 条 / 挂卡 ${rows.length - boostersInPage} 条，`
+            + `新增 ${newInPage}`
+            + (limit > 0 ? `（累计 ${seen}/${limit} 包）` : ""));
 
         if (limit > 0 && seen >= limit) {
           log(`已达上限 ${limit} 包，停止翻页`);
@@ -406,8 +469,7 @@
         }
 
         dupStreak = newInPage === 0 ? dupStreak + 1 : 0;
-        // 设了上限但还没抓够时，重复数据只说明这段历史已存过，应继续往更早翻
-        if (dupStreak >= 3 && before > 0 && !(limit > 0 && seen < limit)) {
+        if (dupStreak >= 3 && before > 0) {
           log("连续 3 页无新数据，判定已追上历史进度");
           break;
         }
@@ -459,13 +521,16 @@
   };
 
   $("#fs-export").onclick = () => {
-    const evts = recentEvents(loadEvents(), loadLimit());
+    const { boosters, farms } = splitScope(loadEvents(), loadLimit());
+    const evts = boosters.concat(farms).sort((a, b) => (b.ts || 0) - (a.ts || 0));
     if (!evts.length) { alert("还没有数据"); return; }
     const esc = s => `"${String(s).replace(/"/g, '""')}"`;
-    const csv = ["时间,游戏,卡牌,是否含闪卡,闪卡名称"]
+    const csv = ["时间,来源,游戏,卡牌数,卡牌,闪卡数,闪卡名称"]
       .concat(evts.map(e => [
-        esc(e.time), esc(e.game), esc(e.cards.join(" | ")),
-        e.foils.length ? "是" : "否", esc(e.foils.join(" | "))
+        esc(e.time),
+        e.kind === "farm" ? "挂卡掉落" : "补充包",
+        esc(e.game), e.cards.length, esc(e.cards.join(" | ")),
+        e.foils.length, esc(e.foils.join(" | "))
       ].join(",")))
       .join("\n");
     const url = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv" }));
