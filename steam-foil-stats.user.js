@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam 补充包闪卡统计
 // @namespace    https://github.com/Gravity2000
-// @version      1.3.0
+// @version      1.4.0
 // @updateURL    https://raw.githubusercontent.com/Gravity2000/steam-foil-stats/main/steam-foil-stats.user.js
 // @downloadURL  https://raw.githubusercontent.com/Gravity2000/steam-foil-stats/main/steam-foil-stats.user.js
 // @supportURL   https://github.com/Gravity2000/steam-foil-stats/issues
@@ -22,6 +22,8 @@
   const STORE_KEY = "foilstats_events_v1";
   const LIMIT_KEY = "foilstats_limit_v1";        // 补充包上限（按包数）
   const FARM_LIMIT_KEY = "foilstats_farmlimit_v1"; // 挂卡上限（按卡牌张数）
+  const EN_BOOSTER_KEY = "foilstats_en_booster_v1"; // 是否统计补充包
+  const EN_FARM_KEY = "foilstats_en_farm_v1";       // 是否统计挂卡掉落
   const BOOSTER_KEYWORDS = ["已拆开补充包", "Unpacked booster pack", "拆開補充包"];
   const FARM_KEYWORDS = ["因游戏时数而获取", "因遊戲時數而獲取",
                          "Earned", "Got an item drop", "游戏时数", "遊戲時數"];
@@ -47,6 +49,10 @@
     return Number.isFinite(v) && v > 0 ? v : 0;
   };
   const saveFarmLimit = v => GM_setValue(FARM_LIMIT_KEY, v);
+  // 开关默认：补充包开，挂卡关（挂卡是可选的附加统计，不主动打扰）
+  const loadEnBooster = () => GM_getValue(EN_BOOSTER_KEY, true) !== false;
+  const loadEnFarm = () => GM_getValue(EN_FARM_KEY, false) === true;
+  const saveEnabled = (b, f) => { GM_setValue(EN_BOOSTER_KEY, b); GM_setValue(EN_FARM_KEY, f); };
 
   // ---------------- 工具 ----------------
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -216,6 +222,9 @@
     color: #c7d5e0; padding: 5px 7px; border-radius: 2px; font-size: 12px;
   }
   #fs-embed .fs-sep { color: #4a5a6a; }
+  #fs-embed .fs-chk { display: inline-flex; align-items: center; gap: 4px;
+    cursor: pointer; color: #c7d5e0; user-select: none; }
+  #fs-embed .fs-chk input { cursor: pointer; accent-color: #4c6b91; }
   #fs-embed .fs-grid { display: flex; flex-wrap: wrap; gap: 14px; }
   #fs-embed .fs-card {
     flex: 1 1 240px; background: #1b2838;
@@ -254,11 +263,13 @@
     </div>
     <div class="fs-inner">
       <div class="fs-ctrl">
-        <span>补充包最近</span>
+        <label class="fs-chk"><input type="checkbox" id="fs-en-booster" checked> 补充包</label>
+        <span>最近</span>
         <input id="fs-limit" type="number" min="1" step="1" placeholder="全部">
         <span>包</span>
         <span class="fs-sep">·</span>
-        <span>挂卡最近</span>
+        <label class="fs-chk"><input type="checkbox" id="fs-en-farm"> 挂卡掉落</label>
+        <span>最近</span>
         <input id="fs-farm-limit" type="number" min="1" step="1" placeholder="全部">
         <span>张卡</span>
         <button id="fs-limit-save">应用</button>
@@ -345,8 +356,10 @@
     const map = loadEvents();
     const limit = loadLimit();
     const farmLimit = loadFarmLimit();
+    const enB = loadEnBooster();
+    const enF = loadEnFarm();
     const { boosters, farms, totalBoosters, totalFarmCards } =
-      splitScope(map, limit, farmLimit);
+      splitScope(map, enB ? limit : 0, enF ? farmLimit : 0);
 
     const B = tally(boosters);
     const F = tally(farms);
@@ -382,19 +395,16 @@
 
     $("#fs-result").innerHTML = `
       <div class="fs-scope">
-        <div>补充包：${limit > 0
-          ? `最近 <b>${limit}</b> 包`
-          : `<b>全部</b>`}
+        ${enB ? `<div>补充包：${limit > 0 ? `最近 <b>${limit}</b> 包` : `<b>全部</b>`}
           <span class="fs-range">　实际 ${B.n} 包 / 共抓取 ${totalBoosters} 包
-          ${B.n ? `　${oldest} → ${newest}` : ""}</span></div>
-        <div>挂卡掉落：${farmLimit > 0
-          ? `最近 <b>${farmLimit}</b> 张卡`
-          : `<b>全部</b>`}
+          ${B.n ? `　${oldest} → ${newest}` : ""}</span></div>` : ""}
+        ${enF ? `<div>挂卡掉落：${farmLimit > 0 ? `最近 <b>${farmLimit}</b> 张卡` : `<b>全部</b>`}
           <span class="fs-range">　实际 ${F.cards} 张 / 共抓取 ${totalFarmCards} 张
-          ${F.n ? `　${farms[F.n-1].time} → ${farms[0].time}` : ""}</span></div>
+          ${F.n ? `　${farms[F.n-1].time} → ${farms[0].time}` : ""}</span></div>` : ""}
+        ${!enB && !enF ? `<div style="color:#c07a7a">两个渠道都关掉了，勾选至少一个再看结果。</div>` : ""}
       </div>
       <div class="fs-grid">
-        <div class="fs-card">
+        ${enB ? `<div class="fs-card">
           <h4>补充包 · 单卡出闪率</h4>
           <div class="fs-big">${B.cards ? B.rate.toFixed(2) + "%" : "—"}</div>
           <div class="fs-sub">闪卡张数 ÷ 卡牌总数</div>
@@ -402,8 +412,8 @@
           <div class="fs-stat"><span>卡牌总数</span><b>${B.cards}</b></div>
           <div class="fs-stat"><span>闪卡张数</span><b>${B.foils}</b></div>
           <div class="fs-stat"><span>95% 置信区间</span><b>${ci(B)}</b></div>
-        </div>
-        <div class="fs-card">
+        </div>` : ""}
+        ${enF ? `<div class="fs-card">
           <h4>挂卡掉落 · 单卡出闪率</h4>
           <div class="fs-big" style="color:#f4a460">${F.cards ? F.rate.toFixed(2) + "%" : "—"}</div>
           <div class="fs-sub">闪卡张数 ÷ 卡牌总数</div>
@@ -411,30 +421,30 @@
           <div class="fs-stat"><span>卡牌总数</span><b>${F.cards}</b></div>
           <div class="fs-stat"><span>闪卡张数</span><b>${F.foils}</b></div>
           <div class="fs-stat"><span>95% 置信区间</span><b>${ci(F)}</b></div>
-        </div>
-        <div class="fs-card">
+        </div>` : ""}
+        ${enB ? `<div class="fs-card">
           <h4>补充包 · 单包含闪率</h4>
           <div class="fs-big" style="color:#66c0f4">${B.n ? packRate.toFixed(2) + "%" : "—"}</div>
           <div class="fs-sub">含闪卡的包数 ÷ 总包数</div>
           <div class="fs-stat"><span>含闪卡的包数</span><b>${foilPacks}</b></div>
           <div class="fs-stat"><span>95% 置信区间</span>
             <b>${B.n ? pct(plo) + " ~ " + pct(phi) : "—"}</b></div>
-        </div>
-        ${gameRows ? `<div class="fs-card">
+        </div>` : ""}
+        ${(enB && gameRows) ? `<div class="fs-card">
           <h4>补充包按游戏（闪卡/卡牌）</h4>
           <div class="fs-games">${gameRows}</div>
         </div>` : ""}
       </div>
-      ${(B.cards || F.cards) ? `<div class="fs-note">
-        <b style="color:#66c0f4">两个渠道对比：</b>${cmp}<br><br>
-        当前样本：补充包 ${B.cards} 张卡（${B.n} 包），挂卡 ${F.cards} 张卡。
-        两个渠道的上限独立设置，时间范围可能不同 —— 对比时留意这点。
-        ${(B.cards < 1500) ? "补充包样本偏小，区间会很宽，先别急着下结论。" : ""}
+      ${((enB && B.cards) || (enF && F.cards)) ? `<div class="fs-note">
+        ${(enB && enF) ? `<b style="color:#66c0f4">两个渠道对比：</b>${cmp}<br><br>` : ""}
+        当前样本：${enB ? `补充包 ${B.cards} 张卡（${B.n} 包）` : ""}${(enB && enF) ? "，" : ""}${enF ? `挂卡 ${F.cards} 张卡` : ""}。
+        ${(enB && enF) ? "两个渠道的上限独立设置，时间范围可能不同 —— 对比时留意这点。" : ""}
+        ${(enB && B.cards < 1500) ? "补充包样本偏小，区间会很宽，先别急着下结论。" : ""}
         要把区间收窄到能区分 1% 和 0.5%，大概需要一万张卡。<br><br>
-        <b style="color:#66c0f4">注意：</b>挂卡掉落的记录会把同一时段的多次掉落合并成一条
-        （一条里可能有 1~2 张卡），所以分母按<b>卡牌张数</b>算，不是记录条数。<br>
-        补充包的单卡率与单包率的关系可反推机制：若每张卡独立判定，
-        单包含闪率应 ≈ 1-(1-p)³ ≈ 3 倍单卡率。
+        ${enF ? `<b style="color:#66c0f4">注意：</b>挂卡掉落的记录会把同一时段的多次掉落合并成一条
+        （一条里可能有 1~2 张卡），所以分母按<b>卡牌张数</b>算，不是记录条数。<br>` : ""}
+        ${enB ? `补充包的单卡率与单包率的关系可反推机制：若每张卡独立判定，
+        单包含闪率应 ≈ 1-(1-p)³ ≈ 3 倍单卡率。` : ""}
       </div>` : ""}`;
   }
 
@@ -446,8 +456,9 @@
     $("#fs-stop").disabled = false;
 
     const map = loadEvents();
-    const limit = loadLimit();
-    const farmLimit = loadFarmLimit();
+    const enB = loadEnBooster(), enF = loadEnFarm();
+    const limit = enB ? loadLimit() : 0;
+    const farmLimit = enF ? loadFarmLimit() : 0;
     const before = Object.keys(map).length;
     let cursor = readInitialCursor();
     let filterApp = true;
@@ -566,10 +577,14 @@
     if (v === null) return;
     const fv = readLimitInput("#fs-farm-limit", "挂卡上限");
     if (fv === null) return;
-    saveLimit(v);
-    saveFarmLimit(fv);
-    log(`范围已更新 —— 补充包：${v > 0 ? "最近 " + v + " 包" : "全部"}，`
-        + `挂卡：${fv > 0 ? "最近 " + fv + " 张卡" : "全部"}`);
+    const b = $("#fs-en-booster").checked;
+    const f = $("#fs-en-farm").checked;
+    if (!b && !f) { alert("至少要勾选一个统计渠道"); return; }
+    saveLimit(v); saveFarmLimit(fv); saveEnabled(b, f);
+    const parts = [];
+    if (b) parts.push(`补充包 ${v > 0 ? "最近 " + v + " 包" : "全部"}`);
+    if (f) parts.push(`挂卡 ${fv > 0 ? "最近 " + fv + " 张卡" : "全部"}`);
+    log("范围已更新 —— " + parts.join("，") + (b && f ? "" : "（另一渠道已关闭）"));
     render();
   };
   ["#fs-limit", "#fs-farm-limit"].forEach(sel =>
@@ -585,8 +600,11 @@
   };
 
   $("#fs-export").onclick = () => {
-    const { boosters, farms } = splitScope(loadEvents(), loadLimit(), loadFarmLimit());
-    const evts = boosters.concat(farms).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    const eb = loadEnBooster(), ef = loadEnFarm();
+    const { boosters, farms } = splitScope(loadEvents(),
+      eb ? loadLimit() : 0, ef ? loadFarmLimit() : 0);
+    const evts = (eb ? boosters : []).concat(ef ? farms : [])
+      .sort((a, b) => (b.ts || 0) - (a.ts || 0));
     if (!evts.length) { alert("还没有数据"); return; }
     const esc = s => `"${String(s).replace(/"/g, '""')}"`;
     const csv = ["时间,来源,游戏,卡牌数,卡牌,闪卡数,闪卡名称"]
@@ -609,6 +627,8 @@
   if (saved > 0) $("#fs-limit").value = saved;
   const savedFarm = loadFarmLimit();
   if (savedFarm > 0) $("#fs-farm-limit").value = savedFarm;
+  $("#fs-en-booster").checked = loadEnBooster();
+  $("#fs-en-farm").checked = loadEnFarm();
   render();
   log("就绪。点「开始扫描」抓取库存历史。");
 })();
