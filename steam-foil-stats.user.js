@@ -406,7 +406,8 @@
         }
 
         dupStreak = newInPage === 0 ? dupStreak + 1 : 0;
-        if (dupStreak >= 3 && before > 0) {
+        // 设了上限但还没抓够时，重复数据只说明这段历史已存过，应继续往更早翻
+        if (dupStreak >= 3 && before > 0 && !(limit > 0 && seen < limit)) {
           log("连续 3 页无新数据，判定已追上历史进度");
           break;
         }
