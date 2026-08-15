@@ -1,12 +1,11 @@
 // ==UserScript==
 // @name         Steam 补充包闪卡统计
 // @namespace    https://github.com/Gravity2000
-// @version      1.6.0
-// @updateURL    https://raw.githubusercontent.com/Gravity2000/steam-foil-stats/main/steam-foil-stats.user.js
-// @downloadURL  https://raw.githubusercontent.com/Gravity2000/steam-foil-stats/main/steam-foil-stats.user.js
-// @supportURL   https://github.com/Gravity2000/steam-foil-stats/issues
-// @description  扫描 Steam 库存历史，统计补充包开出闪卡的实际概率（单卡出闪率 + 单包含闪率）
+// @version      1.7.0
+// @description  统计 Steam 补充包与挂卡掉落的闪卡出现概率，扫描库存历史算出实测掉率和置信区间
 // @author       Gravity2000
+// @license      MIT
+// @supportURL   https://github.com/Gravity2000/steam-foil-stats/issues
 // @match        https://steamcommunity.com/id/*/inventoryhistory*
 // @match        https://steamcommunity.com/profiles/*/inventoryhistory*
 // @match        https://steamcommunity.com/my/inventoryhistory*
@@ -23,9 +22,16 @@
   // 两个上限：0 或留空 = 完全不统计该类；填数字 = 只统计最近这么多
   const LIMIT_KEY = "foilstats_limit_v1";          // 补充包，单位：包
   const FARM_LIMIT_KEY = "foilstats_farmlimit_v1"; // 挂卡掉落，单位：卡牌张数
-  const BOOSTER_KEYWORDS = ["已拆开补充包", "Unpacked booster pack", "拆開補充包"];
-  const FARM_KEYWORDS = ["因游戏时数而获取", "因遊戲時數而獲取",
-                         "Earned", "Got an item drop", "游戏时数", "遊戲時數"];
+  // 抓取时统一用 l=english，所以英文关键词是主力；
+  // 中文保留是因为「当前已渲染的首屏」用的是用户自己的界面语言。
+  const BOOSTER_KEYWORDS = [
+    "Unpacked a booster pack", "Unpacked booster pack",
+    "已拆开补充包", "拆開補充包"
+  ];
+  const FARM_KEYWORDS = [
+    "Earned due to game play time", "Earned due to game playtime",
+    "因游戏时数而获取", "因遊戲時數而獲取"
+  ];
   const FOIL_MARKERS = ["(闪亮)", "（闪亮）", "(閃亮)", "(Foil)"];
   const PAGE_DELAY_MS = 4000;
   const MAX_PAGES = 400;
@@ -135,7 +141,11 @@
 
     // 挂卡掉落没有「包」的概念，游戏名从卡牌本身取不到，标记为掉落
     const game = booster
-      ? boosterName.replace(/\s*补充包\s*$/, "").replace(/\s*Booster Pack\s*$/i, "").trim()
+      ? boosterName
+          .replace(/\s*补充包\s*$/, "")
+          .replace(/\s*補充包\s*$/, "")
+          .replace(/\s*Booster\s*Pack\s*$/i, "")
+          .trim()
       : "";
 
     return {
@@ -147,9 +157,22 @@
     };
   }
 
-  const parseHtml = html =>
-    [...new DOMParser().parseFromString(html, "text/html")
-      .querySelectorAll(".tradehistoryrow")].map(parseRow).filter(Boolean);
+  // 记录扫描过程中遇到、但未被识别的事件描述，用于诊断静默失败
+  const unknownDescs = new Map();
+
+  function parseHtml(html) {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const rows = [...doc.querySelectorAll(".tradehistoryrow")];
+    rows.forEach(r => {
+      const d = r.querySelector(".tradehistory_event_description");
+      if (!d) return;
+      const t = d.textContent.trim();
+      if (!isBoosterEvent(t) && !isFarmEvent(t)) {
+        unknownDescs.set(t, (unknownDescs.get(t) || 0) + 1);
+      }
+    });
+    return { rows: rows.map(parseRow).filter(Boolean), total: rows.length };
+  }
 
   // ---------------- 抓取 ----------------
   function readInitialCursor() {
@@ -162,6 +185,7 @@
     const base = location.pathname.replace(/\/?$/, "/");
     const p = new URLSearchParams();
     p.set("ajax", "1");
+    p.set("l", "english");   // 强制英文，与用户界面语言解耦
     if (filterApp) p.append("app[]", "753");
     if (cursor) {
       p.set("cursor[time]", cursor.time);
@@ -465,6 +489,8 @@
     let pages = 0, added = 0, dupStreak = 0;
     let seen = 0;       // 已扫到的补充包数
     let farmSeen = 0;   // 顺带记录的挂卡张数（不参与停止判断）
+    let totalRowsSeen = 0; // 扫过的全部记录行数（含无关事件）
+    unknownDescs.clear();
 
     // 上限每轮重新读取，扫描途中改设置立即生效；0 表示该类不参与
     const limitNow = () => loadLimit();
@@ -509,7 +535,9 @@
           throw err;
         }
 
-        const rows = data.html ? parseHtml(data.html) : [];
+        const parsed = data.html ? parseHtml(data.html) : { rows: [], total: 0 };
+        const rows = parsed.rows;
+        totalRowsSeen += parsed.total;
 
         if (pages === 0 && rows.length === 0 && filterApp && !data.cursor) {
           log("应用过滤无效，改为全量扫描");
@@ -563,6 +591,17 @@
     saveEvents(map);
     render();
     log(`扫描结束：本次新增 ${added} 条，累计 ${Object.keys(map).length} 条`);
+
+    // 一条都没识别出来，但确实扫到了记录 —— 大概率是页面语言或结构变了
+    if (seen === 0 && farmSeen === 0 && totalRowsSeen > 0) {
+      log(`⚠ 扫了 ${totalRowsSeen} 条记录但一条都没识别出来。`);
+      const top = [...unknownDescs.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+      if (top.length) {
+        log("实际遇到的事件描述（请截图反馈给作者）：");
+        top.forEach(([d, c]) => log(`　· ${d} × ${c}`));
+      }
+      log("可能是 Steam 改版或语言未覆盖，欢迎去 GitHub 提 issue。");
+    }
 
     scanning = false;
     $("#fs-scan").disabled = false;
