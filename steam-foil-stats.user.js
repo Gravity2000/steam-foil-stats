@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam 补充包闪卡统计
 // @namespace    https://github.com/Gravity2000
-// @version      1.7.0
+// @version      1.7.1
 // @description  统计 Steam 补充包与挂卡掉落的闪卡出现概率，扫描库存历史算出实测掉率和置信区间
 // @author       Gravity2000
 // @license      MIT
@@ -175,11 +175,6 @@
   }
 
   // ---------------- 抓取 ----------------
-  function readInitialCursor() {
-    const m = document.documentElement.innerHTML.match(/g_historyCursor\s*=\s*(\{[\s\S]*?\});/);
-    if (!m) return null;
-    try { return JSON.parse(m[1]); } catch { return null; }
-  }
 
   function buildUrl(cursor, filterApp) {
     const base = location.pathname.replace(/\/?$/, "/");
@@ -484,7 +479,8 @@
 
     const map = loadEvents();
     const before = Object.keys(map).length;
-    let cursor = readInitialCursor();
+    // 从 null 游标开始请求，第一页 ajax 会返回最新记录（英文版）
+    let cursor = null;
     let filterApp = true;
     let pages = 0, added = 0, dupStreak = 0;
     let seen = 0;       // 已扫到的补充包数
@@ -501,7 +497,7 @@
       return (!L || seen >= L) && (!FL || farmSeen >= FL);
     };
 
-    log(cursor ? "从当前页面游标开始" : "未取到游标，从头开始");
+    log("从最新记录开始抓取（统一使用英文页面）");
     {
       const L = limitNow(), FL = farmLimitNow();
       const parts = [];
@@ -512,15 +508,6 @@
     }
 
     try {
-      [...document.querySelectorAll(".tradehistoryrow")]
-        .map(parseRow).filter(Boolean)
-        .forEach(e => {
-          if (e.kind === "farm") farmSeen += e.cards.length;
-          else seen++;
-          if (!map[e.id]) { map[e.id] = e; added++; }
-        });
-
-      if (done()) log("当前页已够，无需翻页");
 
       while (!abort && pages < MAX_PAGES && !done()) {
         let data;
